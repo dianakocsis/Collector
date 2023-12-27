@@ -163,4 +163,32 @@ describe('DAO', function () {
         .withArgs(proposalId);
     });
   });
+
+  describe('Proposal Status', function () {
+    it('Nonexistent status', async function () {
+      let proposalArgs: ProposeArgs = [
+        [collectorDao.target],
+        [tokens('0')],
+        [collectorDao.interface.encodeFunctionData('getProposalStatus', [1])],
+        ethers.keccak256(ethers.toUtf8Bytes('Buying something cool')),
+      ];
+      let proposalId = await collectorDao.hashProposal(...proposalArgs);
+      let status = await collectorDao.getProposalStatus(proposalId);
+      expect(status).to.equal(0);
+    });
+
+    it('Active Status', async function () {
+      await collectorDao.buyMembership({ value: tokens('1') });
+      let proposalArgs: ProposeArgs = [
+        [collectorDao.target],
+        [tokens('0')],
+        [collectorDao.interface.encodeFunctionData('getProposalStatus', [1])],
+        ethers.keccak256(ethers.toUtf8Bytes('Buying something cool')),
+      ];
+      await collectorDao.propose(...proposalArgs);
+      let proposalId = await collectorDao.hashProposal(...proposalArgs);
+      let status = await collectorDao.getProposalStatus(proposalId);
+      expect(status).to.equal(1);
+    });
+  });
 });
