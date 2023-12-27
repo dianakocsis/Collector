@@ -6,12 +6,14 @@ import "./NftMarketplace.sol";
 contract DAO {
 
     struct Proposal {
-        uint id;
-        uint startTime;
-        uint endTime;
-        uint forVotes;
-        uint againstVotes;
-        address proposer;
+        uint256 start;
+        uint256 end;
+        uint256 forVotes;
+        uint256 againstVotes;
+        uint256 voteCount;
+        uint256 membersTotal;
+        mapping(address => bool) hasVoted;
+        address creator;
         bool executed;
     }
 
@@ -20,10 +22,11 @@ contract DAO {
     }
 
     enum ProposalState {
+        Nonexistent,
         Active,
-        NotReady,
         Succeeded,
-        Executed
+        Executed,
+        Failed
     }
 
     struct Member {
@@ -44,11 +47,19 @@ contract DAO {
     uint256 public constant PRICE = 1 ether;
     uint256 public totalMembers;
     mapping(address => Member) public members;
+    uint256 public constant DURATION = 7 days;
 
     event MembershipBought(address indexed member);
+    event ProposalCreated(uint256 indexed proposalId);
 
     error WrongAmount(uint256 amount, uint256 price);
     error AlreadyMember();
+    error OnlyMembers();
+    error FunctionLengthMismatch(
+        uint256 targetsLength,
+        uint256 valuesLength,
+        uint256 calldatasLength);
+    error RequireDifferentDescription();
 
     /// @notice Sets the chainId
     constructor() {
@@ -62,8 +73,13 @@ contract DAO {
         locked = false;
     }
 
-    modifier onlyMember {
-        require(isMember[msg.sender], "NOT_A_MEMBER");
+    /// @notice Checks if the address is a member
+    /// @param _addr The address to check
+    modifier onlyMember(address _addr) {
+        Member memory m = members[_addr];
+        if (m.votingPower == 0) {
+            revert OnlyMembers();
+        }
         _;
     }
 
@@ -107,7 +123,24 @@ contract DAO {
         lostVotingPower[msg.sender] = 0;
         delegatedVote[msg.sender] = address(0);
     }
-    
+
+    /// @notice Gets the status of a proposal
+    /// @param _proposalId The id of the proposal
+    /// @return The status of the proposal
+    function getProposalStatus(uint256 _proposalId) public view returns (ProposalState) {
+        Proposal storage p = proposals[_proposalId];
+        if (p.start == 0) {
+            return ProposalState.Nonexistent;
+        } else if (block.timestamp < p.end) {
+            return ProposalState.Active;
+        } else if (p.executed) {
+            return ProposalState.Executed;
+        } else if (p.forVotes > p.againstVotes && (p.voteCount * 4 > p.membersTotal)) {
+            return ProposalState.Succeeded;
+        } else {
+            return ProposalState.Failed;
+        }
+    }
 
     function hashProposal(
         address[] memory targets,
@@ -118,29 +151,37 @@ contract DAO {
         return uint256(keccak256(abi.encode(targets, values, calldatas, descriptionHash)));
     }
 
+    /// @notice Creates a proposal
+    /// @param _targets The addresses of the contracts to call
+    /// @param _values The values to send to the contracts
+    /// @param _calldatas The calldatas to send to the contracts
+    /// @param _description The description of the proposal
+    /// @dev The length of the arrays must be the same
     function propose(
-        address[] memory targets,
-        uint256[] memory values,
-        bytes[] memory calldatas,
-        bytes32 descriptionHash
-    ) external onlyMember returns (uint) {
+        address[] calldata _targets,
+        uint256[] calldata _values,
+        bytes[] calldata _calldatas,
+        bytes32 _description
+    )
+        external
+        onlyMember(msg.sender)
+    {
+        if (_targets.length != _values.length ||
+            _targets.length != _calldatas.length) {
+            revert FunctionLengthMismatch(_targets.length, _values.length, _calldatas.length);
+        }
 
-        uint256 proposalId = hashProposal(targets, values, calldatas, descriptionHash);
+        uint256 proposalId = hashProposal(_targets, _values, _calldatas, _description);
+        Proposal storage p = proposals[proposalId];
+        if (p.start != 0) {
+            revert RequireDifferentDescription();
+        }
+        p.start = block.timestamp;
+        p.end = block.timestamp + DURATION;
+        p.creator = msg.sender;
+        p.membersTotal = totalMembers;
 
-        require(targets.length == values.length, "INVALID_PROPOSAL_LENGTH");
-        require(targets.length == values.length, "INVALID_PROPOSAL_LENGTH");
-        require(targets.length == calldatas.length, "INVALID_PROPOSAL_LENGTH");
-
-        uint startTime = block.timestamp;
-        uint endTime = startTime + VOTING_PERIOD;
-        Proposal storage newProposal = proposals[proposalId];
-        
-        newProposal.id = proposalId;
-        newProposal.startTime = startTime;
-        newProposal.endTime = endTime;
-        newProposal.proposer = msg.sender;
-    
-        return newProposal.id;
+        emit ProposalCreated(proposalId);
     }
 
     function execute(
@@ -148,13 +189,10 @@ contract DAO {
         uint256[] memory values,
         bytes[] memory calldatas,
         bytes32 descriptionHash
-    ) public onlyMember returns (uint) {
+    ) public returns (uint) {
 
         uint256 proposalId = hashProposal(targets, values, calldatas, descriptionHash);
-
-        ProposalState status = state(proposalId);
         
-        require(status == ProposalState.Succeeded, "PROPOSAL_HAS_NOT_SUCCEEDED");
         proposals[proposalId].executed = true;
 
         executing = true;
@@ -191,25 +229,12 @@ contract DAO {
         
     }
 
-    function state(uint proposalId) public view returns (ProposalState) {
-        Proposal storage proposal = proposals[proposalId];
-        if (block.timestamp <= proposal.endTime) {
-            return ProposalState.Active;
-        } else if (proposal.forVotes <= proposal.againstVotes) {
-            return ProposalState.NotReady;
-        } else if (proposal.executed) {
-            return ProposalState.Executed;
-        } else 
-            return ProposalState.Succeeded;
-    }
-
-    function castVote(uint proposalId, bool support) onlyMember external {
+    function castVote(uint proposalId, bool support) external {
         require(votingPower[msg.sender] > 0, "NO_VOTING_POWER");
         return _castVote(msg.sender, proposalId, support);
     }
 
     function _castVote(address voter, uint proposalId, bool support) internal {
-        require(state(proposalId) == ProposalState.Active, "VOTING_CLOSED");
         Proposal storage proposal = proposals[proposalId];
         Receipt storage receipt = receipts[proposalId][voter];
         require(receipt.hasVoted == false, "ALREADY_VOTED");
@@ -238,10 +263,6 @@ contract DAO {
 
     function getVotingPower(address _addr) external view returns (uint) {
        return votingPower[_addr];
-    }
-
-    function getProposal(uint x) external view returns (Proposal memory) {
-        return proposals[x];
     }
 
     function getReceipt(address addr, uint x) external view returns (Receipt memory) {
