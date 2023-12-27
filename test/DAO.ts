@@ -191,4 +191,85 @@ describe('DAO', function () {
       expect(status).to.equal(1);
     });
   });
+
+  describe('Cast vote without sig', function () {
+    it('Only member can cast vote', async function () {
+      await expect(
+        collectorDao.castVote(1, true)
+      ).to.be.revertedWithCustomError(collectorDao, 'OnlyMembers');
+    });
+
+    it('Cannot vote for nonexistent proposal', async function () {
+      await collectorDao.buyMembership({ value: tokens('1') });
+      await expect(
+        collectorDao.castVote(1, true)
+      ).to.be.revertedWithCustomError(collectorDao, 'ProposalNotActive');
+    });
+
+    it('Updates proposal after a members votes in support', async function () {
+      await collectorDao.buyMembership({ value: tokens('1') });
+      let proposalArgs: ProposeArgs = [
+        [collectorDao.target],
+        [tokens('0')],
+        [collectorDao.interface.encodeFunctionData('getProposalStatus', [1])],
+        ethers.keccak256(ethers.toUtf8Bytes('Buying something cool')),
+      ];
+      await collectorDao.propose(...proposalArgs);
+      let proposalId = await collectorDao.hashProposal(...proposalArgs);
+      await collectorDao.castVote(proposalId, true);
+      let proposal = await collectorDao.proposals(proposalId);
+      expect(proposal.forVotes).to.equal(1);
+      expect(proposal.voteCount).to.equal(1);
+    });
+
+    it('Cannot vote for same proposal more than once', async function () {
+      await collectorDao.buyMembership({ value: tokens('1') });
+      let proposalArgs: ProposeArgs = [
+        [collectorDao.target],
+        [tokens('0')],
+        [collectorDao.interface.encodeFunctionData('getProposalStatus', [1])],
+        ethers.keccak256(ethers.toUtf8Bytes('Buying something cool')),
+      ];
+      await collectorDao.propose(...proposalArgs);
+      let proposalId = await collectorDao.hashProposal(...proposalArgs);
+      await collectorDao.castVote(proposalId, true);
+      await expect(
+        collectorDao.castVote(proposalId, true)
+      ).to.be.revertedWithCustomError(collectorDao, 'AlreadyVoted');
+    });
+
+    it('Cannot vote if memebr joined after the proposal was created', async function () {
+      await collectorDao.buyMembership({ value: tokens('1') });
+      let proposalArgs: ProposeArgs = [
+        [collectorDao.target],
+        [tokens('0')],
+        [collectorDao.interface.encodeFunctionData('getProposalStatus', [1])],
+        ethers.keccak256(ethers.toUtf8Bytes('Buying something cool')),
+      ];
+      await collectorDao.propose(...proposalArgs);
+
+      await collectorDao.connect(addr2).buyMembership({ value: tokens('1') });
+      let proposalId = await collectorDao.hashProposal(...proposalArgs);
+      await expect(
+        collectorDao.connect(addr2).castVote(proposalId, true)
+      ).to.be.revertedWithCustomError(collectorDao, 'MemberJoinedTooLate');
+    });
+
+    it('Vote casted event emitted', async function () {
+      await collectorDao.buyMembership({ value: tokens('1') });
+      let proposalArgs: ProposeArgs = [
+        [collectorDao.target],
+        [tokens('0')],
+        [collectorDao.interface.encodeFunctionData('getProposalStatus', [1])],
+        ethers.keccak256(ethers.toUtf8Bytes('Buying something cool')),
+      ];
+      await collectorDao.propose(...proposalArgs);
+      let proposalId = await collectorDao.hashProposal(...proposalArgs);
+      const txResponse = await collectorDao.castVote(proposalId, true);
+      const tx = await txResponse.wait();
+      await expect(tx)
+        .to.emit(collectorDao, 'VoteCasted')
+        .withArgs(proposalId, addr1.address, true);
+    });
+  });
 });

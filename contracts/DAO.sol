@@ -51,6 +51,7 @@ contract DAO {
 
     event MembershipBought(address indexed member);
     event ProposalCreated(uint256 indexed proposalId);
+    event VoteCasted(uint256 indexed id, address indexed member, bool indexed support);
 
     error WrongAmount(uint256 amount, uint256 price);
     error AlreadyMember();
@@ -60,6 +61,9 @@ contract DAO {
         uint256 valuesLength,
         uint256 calldatasLength);
     error RequireDifferentDescription();
+    error AlreadyVoted();
+    error MemberJoinedTooLate();
+    error ProposalNotActive(ProposalState currentStatus);
 
     /// @notice Sets the chainId
     constructor() {
@@ -229,25 +233,38 @@ contract DAO {
         
     }
 
-    function castVote(uint proposalId, bool support) external {
-        require(votingPower[msg.sender] > 0, "NO_VOTING_POWER");
-        return _castVote(msg.sender, proposalId, support);
+    /// @notice Casts a vote on a proposal
+    /// @param _proposalId The id of the proposal
+    /// @param _support Whether to support the proposal or not
+    function castVote(uint256 _proposalId, bool _support) external {
+        _castVote(_proposalId, _support, msg.sender);
     }
 
-    function _castVote(address voter, uint proposalId, bool support) internal {
-        Proposal storage proposal = proposals[proposalId];
-        Receipt storage receipt = receipts[proposalId][voter];
-        require(receipt.hasVoted == false, "ALREADY_VOTED");
-        uint votes = votingPower[voter];
+    /// @notice Casts a vote on a proposal
+    /// @param _proposalId The id of the proposal
+    /// @param support Whether to support the proposal or not
+    /// @param _voter The address of the voter
+    function _castVote(uint256 _proposalId, bool support, address _voter) internal onlyMember(_voter) {
+        Proposal storage p = proposals[_proposalId];
+        Member memory m = members[_voter];
 
-        if (support) {
-            proposal.forVotes += votes;
-        } else {
-            proposal.againstVotes += votes;
+        if (getProposalStatus(_proposalId) != ProposalState.Active) {
+            revert ProposalNotActive(getProposalStatus(_proposalId));
         }
-
-        receipt.hasVoted = true;
-
+        if (p.hasVoted[_voter]) {
+            revert AlreadyVoted();
+        }
+        if (m.timeJoined > p.start) {
+            revert MemberJoinedTooLate();
+        }
+        if (support) {
+            p.forVotes += m.votingPower;
+        } else {
+            p.againstVotes += m.votingPower;
+        }
+        p.voteCount++;
+        p.hasVoted[_voter] = true;
+        emit VoteCasted(_proposalId, _voter, support);
     }
 
     function buyFromNftMarketplace(NftMarketplace marketplace, address nftContract, uint nftId, uint maxPrice) noReentrant external {
