@@ -21,6 +21,7 @@ describe('DAO', function () {
   let domain: { name: string; chainId: number; verifyingContract: string };
 
   const tokens = (count: string) => ethers.parseUnits(count, 18);
+  const SEVEN_DAYS = 60 * 60 * 24 * 7;
 
   const types = {
     Ballot: [
@@ -28,6 +29,11 @@ describe('DAO', function () {
       { name: 'support', type: 'bool' },
     ],
   };
+
+  async function endVotingPhase() {
+    await network.provider.send('evm_increaseTime', [SEVEN_DAYS]);
+    await network.provider.send('evm_mine');
+  }
 
   this.beforeEach(async function () {
     [addr1, addr2, addr3] = await ethers.getSigners();
@@ -528,6 +534,145 @@ describe('DAO', function () {
       await expect(
         collectorDao.castVoteBySig(id, true, 30, r, s)
       ).to.be.revertedWithCustomError(collectorDao, 'InvalidSignature');
+    });
+  });
+
+  describe('Executing', function () {
+    it('Cannot execute if deadline not passed', async function () {
+      await collectorDao.buyMembership({ value: tokens('1') });
+      let proposalArgs: ProposeArgs = [
+        [collectorDao.target],
+        [tokens('0')],
+        [collectorDao.interface.encodeFunctionData('getProposalStatus', [1])],
+        ethers.keccak256(ethers.toUtf8Bytes('Buying something cool')),
+      ];
+      await collectorDao.propose(...proposalArgs);
+      let proposalId = await collectorDao.hashProposal(...proposalArgs);
+      let p = await collectorDao.proposals(proposalId);
+      await collectorDao.castVote(proposalId, true);
+      await expect(collectorDao.executeProposal(...proposalArgs))
+        .to.be.revertedWithCustomError(collectorDao, 'ProposalStillActive')
+        .withArgs(p.end);
+    });
+
+    it('Cannot execute if did not succeed', async function () {
+      await collectorDao.buyMembership({ value: tokens('1') });
+      await collectorDao.connect(addr2).buyMembership({ value: tokens('1') });
+      await collectorDao.connect(addr3).buyMembership({ value: tokens('1') });
+      let proposalArgs: ProposeArgs = [
+        [collectorDao.target],
+        [tokens('0')],
+        [collectorDao.interface.encodeFunctionData('getProposalStatus', [1])],
+        ethers.keccak256(ethers.toUtf8Bytes('Buying something cool')),
+      ];
+      await collectorDao.propose(...proposalArgs);
+      let proposalId = await collectorDao.hashProposal(...proposalArgs);
+      let p = await collectorDao.proposals(proposalId);
+      await collectorDao.castVote(proposalId, true);
+      await collectorDao.connect(addr2).castVote(proposalId, false);
+      await collectorDao.connect(addr3).castVote(proposalId, false);
+      await endVotingPhase();
+      await expect(
+        collectorDao.executeProposal(...proposalArgs)
+      ).to.be.revertedWithCustomError(collectorDao, 'ProposalDidNotSucceed');
+    });
+
+    it('Executed and updated', async function () {
+      await collectorDao.buyMembership({ value: tokens('1') });
+      await collectorDao.connect(addr2).buyMembership({ value: tokens('1') });
+      await collectorDao.connect(addr3).buyMembership({ value: tokens('1') });
+      let proposalArgs: ProposeArgs = [
+        [collectorDao.target],
+        [tokens('0')],
+        [collectorDao.interface.encodeFunctionData('getProposalStatus', [1])],
+        ethers.keccak256(ethers.toUtf8Bytes('Buying something cool')),
+      ];
+      await collectorDao.propose(...proposalArgs);
+      let proposalId = await collectorDao.hashProposal(...proposalArgs);
+      await collectorDao.castVote(proposalId, true);
+      await collectorDao.connect(addr2).castVote(proposalId, true);
+      await collectorDao.connect(addr3).castVote(proposalId, true);
+      await endVotingPhase();
+      let amt = await ethers.provider.getBalance(collectorDao);
+      await collectorDao.executeProposal(...proposalArgs);
+      let p = await collectorDao.proposals(proposalId);
+      expect(p.executed).to.equal(true);
+      let m = await collectorDao.members(p.creator);
+      expect(m.votingPower).to.equal(2);
+      let newAmt = await ethers.provider.getBalance(collectorDao);
+      expect(amt).to.be.equal(newAmt + tokens('0.01'));
+    });
+
+    it('Executution Failure', async function () {
+      await collectorDao.buyMembership({ value: tokens('1') });
+      await collectorDao.connect(addr2).buyMembership({ value: tokens('1') });
+      await collectorDao.connect(addr3).buyMembership({ value: tokens('1') });
+      let proposalArgs: ProposeArgs = [
+        [collectorDao.target],
+        [tokens('0')],
+        [collectorDao.interface.encodeFunctionData('getProposalStatus', [1])],
+        ethers.keccak256(ethers.toUtf8Bytes('Buying something cool')),
+      ];
+      await collectorDao.propose(...proposalArgs);
+      let proposalId = await collectorDao.hashProposal(...proposalArgs);
+      await collectorDao.castVote(proposalId, true);
+      await collectorDao.connect(addr2).castVote(proposalId, true);
+      await collectorDao.connect(addr3).castVote(proposalId, true);
+      await endVotingPhase();
+      let amt = await ethers.provider.getBalance(collectorDao);
+      await collectorDao.executeProposal(...proposalArgs);
+      let p = await collectorDao.proposals(proposalId);
+      expect(p.executed).to.equal(true);
+      let m = await collectorDao.members(p.creator);
+      expect(m.votingPower).to.equal(2);
+      let newAmt = await ethers.provider.getBalance(collectorDao);
+      expect(amt).to.be.equal(newAmt + tokens('0.01'));
+    });
+
+    it('Cannot execute if already executed', async function () {
+      await collectorDao.buyMembership({ value: tokens('1') });
+      await collectorDao.connect(addr2).buyMembership({ value: tokens('1') });
+      await collectorDao.connect(addr3).buyMembership({ value: tokens('1') });
+      let proposalArgs: ProposeArgs = [
+        [collectorDao.target],
+        [tokens('0')],
+        [collectorDao.interface.encodeFunctionData('getProposalStatus', [1])],
+        ethers.keccak256(ethers.toUtf8Bytes('Buying something cool')),
+      ];
+      await collectorDao.propose(...proposalArgs);
+      let proposalId = await collectorDao.hashProposal(...proposalArgs);
+      await collectorDao.castVote(proposalId, true);
+      await collectorDao.connect(addr2).castVote(proposalId, true);
+      await collectorDao.connect(addr3).castVote(proposalId, true);
+      await endVotingPhase();
+      await collectorDao.executeProposal(...proposalArgs);
+      await expect(
+        collectorDao.executeProposal(...proposalArgs)
+      ).to.be.revertedWithCustomError(collectorDao, 'AlreadyExecuted');
+    });
+
+    it('Event emitted', async function () {
+      await collectorDao.buyMembership({ value: tokens('1') });
+      await collectorDao.connect(addr2).buyMembership({ value: tokens('1') });
+      await collectorDao.connect(addr3).buyMembership({ value: tokens('1') });
+      let proposalArgs: ProposeArgs = [
+        [collectorDao.target],
+        [tokens('0')],
+        [collectorDao.interface.encodeFunctionData('getProposalStatus', [1])],
+        ethers.keccak256(ethers.toUtf8Bytes('Buying something cool')),
+      ];
+      await collectorDao.propose(...proposalArgs);
+      let proposalId = await collectorDao.hashProposal(...proposalArgs);
+      await collectorDao.castVote(proposalId, true);
+      await collectorDao.connect(addr2).castVote(proposalId, true);
+      await collectorDao.connect(addr3).castVote(proposalId, true);
+      await endVotingPhase();
+      let amt = await ethers.provider.getBalance(collectorDao);
+      const txResponse = await collectorDao.executeProposal(...proposalArgs);
+      const tx = await txResponse.wait();
+      await expect(tx)
+        .to.emit(collectorDao, 'ProposalExecuted')
+        .withArgs(proposalId);
     });
   });
 });

@@ -40,6 +40,7 @@ contract DAO {
     }
 
     uint constant public VOTING_PERIOD = 3 days;
+    uint256 public constant REWARD = 0.01 ether;
     mapping (uint => Proposal) public proposals;
     mapping (uint => mapping(address => Receipt)) receipts;
     mapping(address=>bool) isMember;
@@ -54,11 +55,10 @@ contract DAO {
     mapping(address => Member) public members;
     uint256 public constant DURATION = 7 days;
 
-
-
     event MembershipBought(address indexed member);
     event ProposalCreated(uint256 indexed proposalId);
     event VoteCasted(uint256 indexed id, address indexed member, bool indexed support);
+    event ProposalExecuted(uint256 indexed proposalId);
 
     error WrongAmount(uint256 amount, uint256 price);
     error AlreadyMember();
@@ -74,6 +74,10 @@ contract DAO {
     error InvalidSignature();
     error SignatureLengthMismatch(uint256 proposalLength, uint256 supportLength,
         uint256 vLength, uint256 rLength, uint256 sLength);
+    error ProposalStillActive(uint256 deadline);
+    error AlreadyExecuted();
+    error ProposalDidNotSucceed();
+    error CallRevertedWithoutMessage();
 
     /// @notice Sets the chainId
     constructor() {
@@ -183,36 +187,40 @@ contract DAO {
         _castVoteBySig(_proposalId, _support, _v, _r, _s);
     }
 
-    function execute(
-        address[] memory targets,
-        uint256[] memory values,
-        bytes[] memory calldatas,
-        bytes32 descriptionHash
-    ) public returns (uint) {
+    /// @notice Executes a proposal and caller gets a reward
+    /// @param _targets The addresses of the contracts to call
+    /// @param _values The values to send to the contracts
+    /// @param _calldatas The calldatas to send to the contracts
+    /// @param _description The description of the proposal
+    /// @dev The execution does not revert if the eth transfer fails
+    function executeProposal(
+        address[] calldata _targets,
+        uint256[] calldata _values,
+        bytes[] calldata _calldatas,
+        bytes32 _description
+    )
+        external
+    {
+        uint256 proposalId = hashProposal(_targets, _values, _calldatas, _description);
+        Proposal storage p = proposals[proposalId];
+        if (getProposalStatus(proposalId) == ProposalState.Active) {
+            revert ProposalStillActive(p.end);
+        }
+        if (getProposalStatus(proposalId) == ProposalState.Executed) {
+            revert AlreadyExecuted();
+        }
+        if (getProposalStatus(proposalId) != ProposalState.Succeeded) {
+            revert ProposalDidNotSucceed();
+        }
 
-        uint256 proposalId = hashProposal(targets, values, calldatas, descriptionHash);
-        
-        proposals[proposalId].executed = true;
 
-        executing = true;
+        p.executed = true;
+        Member storage m = members[p.creator];
+        m.votingPower++;
+        emit ProposalExecuted(proposalId);
 
-        _execute(targets, values, calldatas);
-
-        executing = false;
-
-        return proposalId;
-
-    }
-
-    function _execute(
-        address[] memory targets,
-        uint256[] memory values,
-        bytes[] memory calldatas
-    ) internal virtual {
-
-        string memory errorMessage = "CALL_REVERTED";
-        for (uint256 i = 0; i < targets.length; ++i) {
-            (bool success, bytes memory returndata) = targets[i].call{value: values[i]}(calldatas[i]);
+        for (uint i = 0; i < _targets.length; i++) {
+            (bool success, bytes memory returndata ) = _targets[i].call{value: _values[i]}(_calldatas[i]);
             if (!success) {
                 if (returndata.length > 0) {
                     assembly {
@@ -221,11 +229,12 @@ contract DAO {
                     }
                 }
                 else {
-                    revert(errorMessage);
+                    revert CallRevertedWithoutMessage();
                 }
             }
         }
-        
+
+        msg.sender.call{value: REWARD}("");
     }
 
     /// @notice Casts a vote on a proposal
