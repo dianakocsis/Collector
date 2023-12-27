@@ -6,10 +6,17 @@ import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 
 contract DAO is IERC721Receiver  {
 
+    uint256 public constant PRICE = 1 ether;
+    uint256 public constant DURATION = 7 days;
+    uint256 public constant REWARD = 0.01 ether;
     bytes32 public constant DOMAIN_TYPEHASH = keccak256(
         "EIP712Domain(string name,uint256 chainId,address verifyingContract)");
     bytes32 public constant BALLOT_TYPEHASH = keccak256("Ballot(uint256 proposalId,bool support)");
     string public constant NAME = "CollectorDao";
+
+    uint256 public immutable chainId;
+
+    uint256 public totalMembers;
 
     struct Proposal {
         uint256 start;
@@ -23,8 +30,9 @@ contract DAO is IERC721Receiver  {
         bool executed;
     }
 
-    struct Receipt {
-        bool hasVoted;
+    struct Member {
+        uint256 votingPower;
+        uint256 timeJoined;
     }
 
     enum ProposalState {
@@ -35,26 +43,8 @@ contract DAO is IERC721Receiver  {
         Failed
     }
 
-    struct Member {
-        uint256 votingPower;
-        uint256 timeJoined;
-    }
-
-    uint constant public VOTING_PERIOD = 3 days;
-    uint256 public constant REWARD = 0.01 ether;
     mapping (uint => Proposal) public proposals;
-    mapping (uint => mapping(address => Receipt)) receipts;
-    mapping(address=>bool) isMember;
-    mapping (address => address) delegatedVote;
-    mapping (address => uint256) votingPower;
-    mapping (address => uint256) lostVotingPower;
-    bool executing;
-    bool internal locked;
-    uint256 public immutable chainId;
-    uint256 public constant PRICE = 1 ether;
-    uint256 public totalMembers;
     mapping(address => Member) public members;
-    uint256 public constant DURATION = 7 days;
 
     event MembershipBought(address indexed member);
     event ProposalCreated(uint256 indexed proposalId);
@@ -87,13 +77,6 @@ contract DAO is IERC721Receiver  {
     /// @notice Sets the chainId
     constructor() {
         chainId = block.chainid;
-    }
-
-    modifier noReentrant() {
-        require(!locked, "No re-entrancy");
-        locked = true;
-        _;
-        locked = false;
     }
 
     /// @notice Checks if the address is a member
