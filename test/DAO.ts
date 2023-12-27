@@ -1,7 +1,12 @@
 import { expect } from 'chai';
 import { ethers, network } from 'hardhat';
 import { SignerWithAddress } from '@nomicfoundation/hardhat-ethers/signers';
-import { DAO__factory, DAO } from '../typechain-types';
+import {
+  DAO__factory,
+  DAO,
+  MockNftMarketplace,
+  MockNftMarketplace__factory,
+} from '../typechain-types';
 import { time } from '@nomicfoundation/hardhat-toolbox/network-helpers';
 import { BigNumberish, AddressLike, BytesLike } from 'ethers';
 
@@ -15,6 +20,8 @@ type ProposeArgs = [
 describe('DAO', function () {
   let CollectorDao: DAO__factory;
   let collectorDao: DAO;
+  let MockNftMarketplace: MockNftMarketplace__factory;
+  let mockNftMarketplace: MockNftMarketplace;
   let addr1: SignerWithAddress;
   let addr2: SignerWithAddress;
   let addr3: SignerWithAddress;
@@ -40,6 +47,14 @@ describe('DAO', function () {
     CollectorDao = (await ethers.getContractFactory('DAO')) as DAO__factory;
     collectorDao = (await CollectorDao.deploy()) as DAO;
     await collectorDao.waitForDeployment();
+
+    MockNftMarketplace = (await ethers.getContractFactory(
+      'MockNftMarketplace'
+    )) as MockNftMarketplace__factory;
+    mockNftMarketplace = (await MockNftMarketplace.deploy(
+      await collectorDao.getAddress()
+    )) as MockNftMarketplace;
+    await mockNftMarketplace.waitForDeployment();
   });
 
   describe('Membership', function () {
@@ -673,6 +688,173 @@ describe('DAO', function () {
       await expect(tx)
         .to.emit(collectorDao, 'ProposalExecuted')
         .withArgs(proposalId);
+    });
+  });
+
+  describe('Buying the nft', function () {
+    it('Able to buy', async function () {
+      expect(await mockNftMarketplace.balanceOf(collectorDao.target)).to.equal(
+        0
+      );
+      expect(
+        await mockNftMarketplace.balanceOf(mockNftMarketplace.target)
+      ).to.equal(1);
+      expect(await mockNftMarketplace.ownerOf(1)).to.equal(
+        mockNftMarketplace.target
+      );
+      let proposalArgs: ProposeArgs = [
+        [collectorDao.target],
+        [tokens('0')],
+        [
+          collectorDao.interface.encodeFunctionData('buyNFTFromMarketplace', [
+            mockNftMarketplace.target,
+            mockNftMarketplace.target,
+            1,
+            tokens('2'),
+          ]),
+        ],
+        ethers.keccak256(ethers.toUtf8Bytes('Buying something cool')),
+      ];
+      await collectorDao.buyMembership({ value: tokens('1') });
+      await collectorDao.connect(addr2).buyMembership({ value: tokens('1') });
+      await collectorDao.connect(addr3).buyMembership({ value: tokens('1') });
+      await collectorDao.propose(...proposalArgs);
+      let proposalId = await collectorDao.hashProposal(...proposalArgs);
+      await collectorDao.castVote(proposalId, true);
+      await collectorDao.connect(addr2).castVote(proposalId, true);
+      await collectorDao.connect(addr3).castVote(proposalId, true);
+      await endVotingPhase();
+      await collectorDao.executeProposal(...proposalArgs);
+      let p = await collectorDao.proposals(proposalId);
+      expect(p.executed).to.equal(true);
+      expect(await mockNftMarketplace.balanceOf(collectorDao.target)).to.equal(
+        1
+      );
+      expect(
+        await mockNftMarketplace.balanceOf(mockNftMarketplace.target)
+      ).to.equal(0);
+      expect(await mockNftMarketplace.ownerOf(1)).to.equal(collectorDao.target);
+    });
+
+    it('Reverts if price too expensive', async function () {
+      let proposalArgs: ProposeArgs = [
+        [collectorDao.target],
+        [tokens('0')],
+        [
+          collectorDao.interface.encodeFunctionData('buyNFTFromMarketplace', [
+            mockNftMarketplace.target,
+            mockNftMarketplace.target,
+            1,
+            tokens('0.1'),
+          ]),
+        ],
+        ethers.keccak256(ethers.toUtf8Bytes('Buying something cool')),
+      ];
+      await collectorDao.buyMembership({ value: tokens('1') });
+      await collectorDao.connect(addr2).buyMembership({ value: tokens('1') });
+      await collectorDao.propose(...proposalArgs);
+      let proposalId = await collectorDao.hashProposal(...proposalArgs);
+      await collectorDao.castVote(proposalId, true);
+      await collectorDao.connect(addr2).castVote(proposalId, true);
+      await endVotingPhase();
+      await expect(collectorDao.executeProposal(...proposalArgs))
+        .to.be.revertedWithCustomError(collectorDao, 'TooExpensive')
+        .withArgs(tokens('2'), tokens('0.1'));
+    });
+
+    it('Reverts if not the correct contract', async function () {
+      let proposalArgs: ProposeArgs = [
+        [collectorDao.target],
+        [tokens('0')],
+        [
+          collectorDao.interface.encodeFunctionData('buyNFTFromMarketplace', [
+            mockNftMarketplace.target,
+            collectorDao.target,
+            1,
+            tokens('2'),
+          ]),
+        ],
+        ethers.keccak256(ethers.toUtf8Bytes('Buying something cool')),
+      ];
+      await collectorDao.buyMembership({ value: tokens('1') });
+      await collectorDao.connect(addr2).buyMembership({ value: tokens('1') });
+      await collectorDao.propose(...proposalArgs);
+      let proposalId = await collectorDao.hashProposal(...proposalArgs);
+      await collectorDao.castVote(proposalId, true);
+      await collectorDao.connect(addr2).castVote(proposalId, true);
+      await endVotingPhase();
+      await expect(collectorDao.executeProposal(...proposalArgs))
+        .to.be.revertedWithCustomError(
+          mockNftMarketplace,
+          'IncorrectNftContract'
+        )
+        .withArgs(collectorDao.target);
+    });
+
+    it('Reverting without message - not enough ether to buy', async function () {
+      let proposalArgs: ProposeArgs = [
+        [collectorDao.target],
+        [tokens('0')],
+        [
+          collectorDao.interface.encodeFunctionData('buyNFTFromMarketplace', [
+            mockNftMarketplace.target,
+            mockNftMarketplace.target,
+            1,
+            tokens('2'),
+          ]),
+        ],
+        ethers.keccak256(ethers.toUtf8Bytes('Buying something cool')),
+      ];
+      await collectorDao.buyMembership({ value: tokens('1') });
+      await collectorDao.propose(...proposalArgs);
+      let proposalId = await collectorDao.hashProposal(...proposalArgs);
+      await collectorDao.castVote(proposalId, true);
+      await endVotingPhase();
+      await expect(
+        collectorDao.executeProposal(...proposalArgs)
+      ).to.be.revertedWithCustomError(
+        collectorDao,
+        'CallRevertedWithoutMessage'
+      );
+    });
+
+    it('Only collector can purchase nft', async function () {
+      await expect(
+        collectorDao.buyNFTFromMarketplace(
+          mockNftMarketplace.target,
+          mockNftMarketplace.target,
+          1,
+          tokens('2')
+        )
+      ).to.be.revertedWithCustomError(collectorDao, 'MustBeCalledByCollector');
+    });
+
+    it('Nft purchased event', async function () {
+      let proposalArgs: ProposeArgs = [
+        [collectorDao.target],
+        [tokens('0')],
+        [
+          collectorDao.interface.encodeFunctionData('buyNFTFromMarketplace', [
+            mockNftMarketplace.target,
+            mockNftMarketplace.target,
+            1,
+            tokens('2'),
+          ]),
+        ],
+        ethers.keccak256(ethers.toUtf8Bytes('Buying something cool')),
+      ];
+      await collectorDao.buyMembership({ value: tokens('1') });
+      await collectorDao.connect(addr2).buyMembership({ value: tokens('1') });
+      await collectorDao.propose(...proposalArgs);
+      let proposalId = await collectorDao.hashProposal(...proposalArgs);
+      await collectorDao.castVote(proposalId, true);
+      await collectorDao.connect(addr2).castVote(proposalId, true);
+      await endVotingPhase();
+      const txResponse = await collectorDao.executeProposal(...proposalArgs);
+      const tx = txResponse.wait();
+      await expect(tx)
+        .to.emit(collectorDao, 'NftPurchased')
+        .withArgs(mockNftMarketplace.target, 1, tokens('2'));
     });
   });
 });

@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.20;
 
-import "./NftMarketplace.sol";
+import "./INftMarketplace.sol";
+import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 
-contract DAO {
+contract DAO is IERC721Receiver  {
 
     bytes32 public constant DOMAIN_TYPEHASH = keccak256(
         "EIP712Domain(string name,uint256 chainId,address verifyingContract)");
@@ -59,6 +60,7 @@ contract DAO {
     event ProposalCreated(uint256 indexed proposalId);
     event VoteCasted(uint256 indexed id, address indexed member, bool indexed support);
     event ProposalExecuted(uint256 indexed proposalId);
+    event NftPurchased(address indexed nftContract, uint256 indexed nftId, uint256 indexed nftPrice);
 
     error WrongAmount(uint256 amount, uint256 price);
     error AlreadyMember();
@@ -78,6 +80,9 @@ contract DAO {
     error AlreadyExecuted();
     error ProposalDidNotSucceed();
     error CallRevertedWithoutMessage();
+    error MustBeCalledByCollector();
+    error TooExpensive(uint256 price, uint256 maxPrice);
+    error ErrorBuying();
 
     /// @notice Sets the chainId
     constructor() {
@@ -296,23 +301,38 @@ contract DAO {
         emit VoteCasted(_proposalId, _voter, support);
     }
 
-    function buyFromNftMarketplace(NftMarketplace marketplace, address nftContract, uint nftId, uint maxPrice) noReentrant external {
-        require(executing, "NOT_EXECUTING");
-        uint price = marketplace.getPrice(nftContract, nftId);
-        require(price <= maxPrice, "INSUFFICIENT_AMOUNT");
-        marketplace.buy{ value: price }(nftContract, nftId);
+    /// @notice Purchases an NFT for the DAO
+    /// @param _marketplace The address of the INftMarketplace
+    /// @param _nftContract The address of the NFT contract to purchase
+    /// @param _nftId The token ID on the nftContract to purchase
+    /// @param _maxPrice The price above which the NFT is deemed too expensive and this function call should fail
+    function buyNFTFromMarketplace(
+        INftMarketplace _marketplace,
+        address _nftContract,
+        uint256 _nftId,
+        uint256 _maxPrice
+    )
+        external
+    {
+        if (msg.sender != address(this)) {
+            revert MustBeCalledByCollector();
+        }
+        uint256 price = _marketplace.getPrice(_nftContract, _nftId);
+        if (price > _maxPrice) {
+            revert TooExpensive(price, _maxPrice);
+        }
+
+        if (!_marketplace.buy{value: price}(_nftContract, _nftId)) {
+            revert ErrorBuying();
+        }
+        emit NftPurchased(_nftContract, _nftId, price);
+
     }
 
-    function getDelegatee(address _addr) external view returns (address) {
-       return delegatedVote[_addr];
-    }
-
-    function getVotingPower(address _addr) external view returns (uint) {
-       return votingPower[_addr];
-    }
-
-    function getReceipt(address addr, uint x) external view returns (Receipt memory) {
-        return receipts[x][addr];
+    /// @notice Receives an NFT
+    /// @dev This function is needed to receive NFTs from the marketplace
+    function onERC721Received(address, address, uint256, bytes calldata) external pure returns (bytes4) {
+        return this.onERC721Received.selector;
     }
 
     /// @notice Casts a vote on a proposal using a signature
