@@ -4,6 +4,8 @@ pragma solidity ^0.8.20;
 import "./INftMarketplace.sol";
 import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 
+/// @title CollectorDao
+/// @notice A DAO for collectors to pool their funds and buy NFTs
 contract DAO is IERC721Receiver  {
 
     uint256 public constant PRICE = 1 ether;
@@ -105,33 +107,6 @@ contract DAO is IERC721Receiver  {
         emit MembershipBought(msg.sender);
     }
 
-    /// @notice Gets the status of a proposal
-    /// @param _proposalId The id of the proposal
-    /// @return The status of the proposal
-    function getProposalStatus(uint256 _proposalId) public view returns (ProposalState) {
-        Proposal storage p = proposals[_proposalId];
-        if (p.start == 0) {
-            return ProposalState.Nonexistent;
-        } else if (block.timestamp < p.end) {
-            return ProposalState.Active;
-        } else if (p.executed) {
-            return ProposalState.Executed;
-        } else if (p.forVotes > p.againstVotes && (p.voteCount * 4 > p.membersTotal)) {
-            return ProposalState.Succeeded;
-        } else {
-            return ProposalState.Failed;
-        }
-    }
-
-    function hashProposal(
-        address[] memory targets,
-        uint256[] memory values,
-        bytes[] memory calldatas,
-        bytes32 descriptionHash
-    ) public pure virtual returns (uint256) {
-        return uint256(keccak256(abi.encode(targets, values, calldatas, descriptionHash)));
-    }
-
     /// @notice Creates a proposal
     /// @param _targets The addresses of the contracts to call
     /// @param _values The values to send to the contracts
@@ -163,6 +138,38 @@ contract DAO is IERC721Receiver  {
         p.membersTotal = totalMembers;
 
         emit ProposalCreated(proposalId);
+    }
+
+    /// @notice Casts a vote on a proposal
+    /// @param _proposalId The id of the proposal
+    /// @param _support Whether to support the proposal or not
+    function castVote(uint256 _proposalId, bool _support) external {
+        _castVote(_proposalId, _support, msg.sender);
+    }
+
+    /// @notice Casts votes on proposals using signatures
+    /// @param _proposalIds The ids of the proposals
+    /// @param _supports Whether to support the proposals or not
+    /// @param _vs The v parts of the signatures
+    /// @param _rs The r parts of the signatures
+    /// @param _ss The s parts of the signatures
+    /// @dev The length of the arrays must be the same
+    function castVoteBySigBulk(
+        uint256[] calldata _proposalIds,
+        bool[] calldata _supports,
+        uint8[] calldata _vs,
+        bytes32[] calldata _rs,
+        bytes32[] calldata _ss
+    )
+        external
+    {
+        if (_proposalIds.length != _supports.length || _proposalIds.length != _vs.length ||
+            _proposalIds.length != _rs.length || _proposalIds.length != _ss.length) {
+            revert SignatureLengthMismatch(_proposalIds.length, _supports.length, _vs.length, _rs.length, _ss.length);
+        }
+        for (uint i = 0; i < _proposalIds.length; i++) {
+            _castVoteBySig(_proposalIds[i], _supports[i], _vs[i], _rs[i], _ss[i]);
+        }
     }
 
     /// @notice Casts a vote on a proposal using a signature
@@ -225,65 +232,6 @@ contract DAO is IERC721Receiver  {
         msg.sender.call{value: REWARD}("");
     }
 
-    /// @notice Casts a vote on a proposal
-    /// @param _proposalId The id of the proposal
-    /// @param _support Whether to support the proposal or not
-    function castVote(uint256 _proposalId, bool _support) external {
-        _castVote(_proposalId, _support, msg.sender);
-    }
-
-    /// @notice Casts votes on proposals using signatures
-    /// @param _proposalIds The ids of the proposals
-    /// @param _supports Whether to support the proposals or not
-    /// @param _vs The v parts of the signatures
-    /// @param _rs The r parts of the signatures
-    /// @param _ss The s parts of the signatures
-    /// @dev The length of the arrays must be the same
-    function castVoteBySigBulk(
-        uint256[] calldata _proposalIds,
-        bool[] calldata _supports,
-        uint8[] calldata _vs,
-        bytes32[] calldata _rs,
-        bytes32[] calldata _ss
-    )
-        external
-    {
-        if (_proposalIds.length != _supports.length || _proposalIds.length != _vs.length ||
-            _proposalIds.length != _rs.length || _proposalIds.length != _ss.length) {
-            revert SignatureLengthMismatch(_proposalIds.length, _supports.length, _vs.length, _rs.length, _ss.length);
-        }
-        for (uint i = 0; i < _proposalIds.length; i++) {
-            _castVoteBySig(_proposalIds[i], _supports[i], _vs[i], _rs[i], _ss[i]);
-        }
-    }
-
-    /// @notice Casts a vote on a proposal
-    /// @param _proposalId The id of the proposal
-    /// @param support Whether to support the proposal or not
-    /// @param _voter The address of the voter
-    function _castVote(uint256 _proposalId, bool support, address _voter) internal onlyMember(_voter) {
-        Proposal storage p = proposals[_proposalId];
-        Member memory m = members[_voter];
-
-        if (getProposalStatus(_proposalId) != ProposalState.Active) {
-            revert ProposalNotActive(getProposalStatus(_proposalId));
-        }
-        if (p.hasVoted[_voter]) {
-            revert AlreadyVoted();
-        }
-        if (m.timeJoined > p.start) {
-            revert MemberJoinedTooLate();
-        }
-        if (support) {
-            p.forVotes += m.votingPower;
-        } else {
-            p.againstVotes += m.votingPower;
-        }
-        p.voteCount++;
-        p.hasVoted[_voter] = true;
-        emit VoteCasted(_proposalId, _voter, support);
-    }
-
     /// @notice Purchases an NFT for the DAO
     /// @param _marketplace The address of the INftMarketplace
     /// @param _nftContract The address of the NFT contract to purchase
@@ -318,6 +266,43 @@ contract DAO is IERC721Receiver  {
         return this.onERC721Received.selector;
     }
 
+    /// @notice Gets the status of a proposal
+    /// @param _proposalId The id of the proposal
+    /// @return The status of the proposal
+    function getProposalStatus(uint256 _proposalId) public view returns (ProposalState) {
+        Proposal storage p = proposals[_proposalId];
+        if (p.start == 0) {
+            return ProposalState.Nonexistent;
+        } else if (block.timestamp < p.end) {
+            return ProposalState.Active;
+        } else if (p.executed) {
+            return ProposalState.Executed;
+        } else if (p.forVotes > p.againstVotes && (p.voteCount * 4 > p.membersTotal)) {
+            return ProposalState.Succeeded;
+        } else {
+            return ProposalState.Failed;
+        }
+    }
+
+    /// @notice Hashes a proposal
+    /// @param _targets The addresses of the contracts to call
+    /// @param _values The values to send to the contracts
+    /// @param _calldatas The calldatas to send to the contracts
+    /// @param _description The description of the proposal
+    /// @return The hash of the proposal
+    function hashProposal(
+        address[] calldata _targets,
+        uint256[] calldata _values,
+        bytes[] calldata _calldatas,
+        bytes32 _description
+    )
+        public
+        pure
+        returns (uint256)
+    {
+        return uint256(keccak256(abi.encode(_targets, _values, _calldatas, _description)));
+    }
+
     /// @notice Casts a vote on a proposal using a signature
     /// @param _proposalId The id of the proposal
     /// @param _support Whether to support the proposal or not
@@ -341,4 +326,30 @@ contract DAO is IERC721Receiver  {
         _castVote(_proposalId, _support, signatory);
     }
 
+    /// @notice Casts a vote on a proposal
+    /// @param _proposalId The id of the proposal
+    /// @param support Whether to support the proposal or not
+    /// @param _voter The address of the voter
+    function _castVote(uint256 _proposalId, bool support, address _voter) internal onlyMember(_voter) {
+        Proposal storage p = proposals[_proposalId];
+        Member memory m = members[_voter];
+
+        if (getProposalStatus(_proposalId) != ProposalState.Active) {
+            revert ProposalNotActive(getProposalStatus(_proposalId));
+        }
+        if (p.hasVoted[_voter]) {
+            revert AlreadyVoted();
+        }
+        if (m.timeJoined > p.start) {
+            revert MemberJoinedTooLate();
+        }
+        if (support) {
+            p.forVotes += m.votingPower;
+        } else {
+            p.againstVotes += m.votingPower;
+        }
+        p.voteCount++;
+        p.hasVoted[_voter] = true;
+        emit VoteCasted(_proposalId, _voter, support);
+    }
 }
