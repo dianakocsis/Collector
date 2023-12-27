@@ -5,6 +5,11 @@ import "./NftMarketplace.sol";
 
 contract DAO {
 
+    bytes32 public constant DOMAIN_TYPEHASH = keccak256(
+        "EIP712Domain(string name,uint256 chainId,address verifyingContract)");
+    bytes32 public constant BALLOT_TYPEHASH = keccak256("Ballot(uint256 proposalId,bool support)");
+    string public constant NAME = "CollectorDao";
+
     struct Proposal {
         uint256 start;
         uint256 end;
@@ -49,6 +54,8 @@ contract DAO {
     mapping(address => Member) public members;
     uint256 public constant DURATION = 7 days;
 
+
+
     event MembershipBought(address indexed member);
     event ProposalCreated(uint256 indexed proposalId);
     event VoteCasted(uint256 indexed id, address indexed member, bool indexed support);
@@ -64,6 +71,9 @@ contract DAO {
     error AlreadyVoted();
     error MemberJoinedTooLate();
     error ProposalNotActive(ProposalState currentStatus);
+    error InvalidSignature();
+    error SignatureLengthMismatch(uint256 proposalLength, uint256 supportLength,
+        uint256 vLength, uint256 rLength, uint256 sLength);
 
     /// @notice Sets the chainId
     constructor() {
@@ -188,6 +198,16 @@ contract DAO {
         emit ProposalCreated(proposalId);
     }
 
+    /// @notice Casts a vote on a proposal using a signature
+    /// @param _proposalId The id of the proposal
+    /// @param _support Whether to support the proposal or not
+    /// @param _v The v part of the signature
+    /// @param _r The r part of the signature
+    /// @param _s The s part of the signature
+    function castVoteBySig(uint256 _proposalId, bool _support, uint8 _v, bytes32 _r, bytes32 _s) external {
+        _castVoteBySig(_proposalId, _support, _v, _r, _s);
+    }
+
     function execute(
         address[] memory targets,
         uint256[] memory values,
@@ -240,6 +260,31 @@ contract DAO {
         _castVote(_proposalId, _support, msg.sender);
     }
 
+    /// @notice Casts votes on proposals using signatures
+    /// @param _proposalIds The ids of the proposals
+    /// @param _supports Whether to support the proposals or not
+    /// @param _vs The v parts of the signatures
+    /// @param _rs The r parts of the signatures
+    /// @param _ss The s parts of the signatures
+    /// @dev The length of the arrays must be the same
+    function castVoteBySigBulk(
+        uint256[] calldata _proposalIds,
+        bool[] calldata _supports,
+        uint8[] calldata _vs,
+        bytes32[] calldata _rs,
+        bytes32[] calldata _ss
+    )
+        external
+    {
+        if (_proposalIds.length != _supports.length || _proposalIds.length != _vs.length ||
+            _proposalIds.length != _rs.length || _proposalIds.length != _ss.length) {
+            revert SignatureLengthMismatch(_proposalIds.length, _supports.length, _vs.length, _rs.length, _ss.length);
+        }
+        for (uint i = 0; i < _proposalIds.length; i++) {
+            _castVoteBySig(_proposalIds[i], _supports[i], _vs[i], _rs[i], _ss[i]);
+        }
+    }
+
     /// @notice Casts a vote on a proposal
     /// @param _proposalId The id of the proposal
     /// @param support Whether to support the proposal or not
@@ -284,6 +329,29 @@ contract DAO {
 
     function getReceipt(address addr, uint x) external view returns (Receipt memory) {
         return receipts[x][addr];
+    }
+
+    /// @notice Casts a vote on a proposal using a signature
+    /// @param _proposalId The id of the proposal
+    /// @param _support Whether to support the proposal or not
+    /// @param _v The v part of the signature
+    /// @param _r The r part of the signature
+    /// @param _s The s part of the signature
+    function _castVoteBySig(uint256 _proposalId, bool _support, uint8 _v, bytes32 _r, bytes32 _s) internal {
+        bytes32 domainSeparator = keccak256(
+            abi.encode(
+                DOMAIN_TYPEHASH,
+                keccak256(bytes(NAME)),
+                chainId,
+                address(this)));
+        bytes32 structHash = keccak256(abi.encode(BALLOT_TYPEHASH, _proposalId, _support));
+        bytes32 digest = keccak256(
+            abi.encodePacked("\x19\x01", domainSeparator, structHash));
+        address signatory = ecrecover(digest, _v, _r, _s);
+        if (signatory == address(0)) {
+            revert InvalidSignature();
+        }
+        _castVote(_proposalId, _support, signatory);
     }
 
 }
