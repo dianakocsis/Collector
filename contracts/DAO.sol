@@ -113,31 +113,6 @@ contract DAO {
         emit MembershipBought(msg.sender);
     }
 
-    function delegate(address to) external {
-        require(votingPower[msg.sender] > 0, "INSUFFICIENT_VOTING_POWER");
-        require(isMember[to], "NOT_A_MEMBER");
-        while (delegatedVote[to] != address(0)) {
-            to = delegatedVote[to];
-
-            require(to != msg.sender, "LOOP_FOUND");
-        }
-        delegatedVote[msg.sender] = to;
-        votingPower[to] += votingPower[msg.sender];
-        lostVotingPower[msg.sender] = votingPower[msg.sender];
-        votingPower[msg.sender] = 0;
-    }
-
-    function undoDelegate() external {
-        address to = delegatedVote[msg.sender];
-        while (delegatedVote[to] != address(0)) {
-            to = delegatedVote[to];
-        }
-        votingPower[to] -= lostVotingPower[msg.sender];
-        votingPower[msg.sender] += lostVotingPower[msg.sender];
-        lostVotingPower[msg.sender] = 0;
-        delegatedVote[msg.sender] = address(0);
-    }
-
     /// @notice Gets the status of a proposal
     /// @param _proposalId The id of the proposal
     /// @return The status of the proposal
