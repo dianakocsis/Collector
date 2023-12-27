@@ -51,3 +51,17 @@ You are writing a contract for Collector DAO, a DAO that aims to collect NFTs. T
 - A DAO member's voting power should be increased each time they perform one of the following actions:
   - +1 voting power (from zero) when an address purchases their DAO membership
   - +1 voting power to the creator of a successfully executed proposal
+
+## Code Coverage Report
+
+-------------------------|----------|----------|----------|----------|----------------|
+File | % Stmts | % Branch | % Funcs | % Lines |Uncovered Lines |
+-------------------------|----------|----------|----------|----------|----------------|
+contracts/ | 100 | 98.28 | 100 | 98.86 | |
+DAO.sol | 100 | 98.28 | 100 | 98.86 | 257 |
+INftMarketplace.sol | 100 | 100 | 100 | 100 | |
+contracts/test/ | 100 | 75 | 100 | 88.89 | |
+MockNFTMarketplace.sol | 100 | 75 | 100 | 88.89 | 39 |
+-------------------------|----------|----------|----------|----------|----------------|
+All files | 100 | 96.77 | 100 | 97.94 | |
+-------------------------|----------|----------|----------|----------|----------------|
