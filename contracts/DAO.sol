@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: Unlicense
-pragma solidity ^0.8.0;
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.20;
+
 import "./NftMarketplace.sol";
-import "hardhat/console.sol";
 
 contract DAO {
 
@@ -26,7 +26,11 @@ contract DAO {
         Executed
     }
 
-    address[] public members;
+    struct Member {
+        uint256 votingPower;
+        uint256 timeJoined;
+    }
+
     uint constant public VOTING_PERIOD = 3 days;
     mapping (uint => Proposal) public proposals;
     mapping (uint => mapping(address => Receipt)) receipts;
@@ -36,6 +40,20 @@ contract DAO {
     mapping (address => uint256) lostVotingPower;
     bool executing;
     bool internal locked;
+    uint256 public immutable chainId;
+    uint256 public constant PRICE = 1 ether;
+    uint256 public totalMembers;
+    mapping(address => Member) public members;
+
+    event MembershipBought(address indexed member);
+
+    error WrongAmount(uint256 amount, uint256 price);
+    error AlreadyMember();
+
+    /// @notice Sets the chainId
+    constructor() {
+        chainId = block.chainid;
+    }
 
     modifier noReentrant() {
         require(!locked, "No re-entrancy");
@@ -49,18 +67,21 @@ contract DAO {
         _;
     }
 
-    function becomeMember() external payable {
-        require(!isMember[msg.sender], "ALREADY_MEMBER");
-        require(msg.value == 1 ether, "ONE_ETHER");
-        isMember[msg.sender] = true;
-        members.push(msg.sender);
-        votingPower[msg.sender] = 1;
-    }
+    /// @notice Buys a membership for 1 eth to join the dao and get voting power
+    function buyMembership() external payable {
+        if (msg.value != PRICE) {
+            revert WrongAmount(msg.value, PRICE);
+        }
+        Member storage member = members[msg.sender];
+        if (member.votingPower != 0) {
+            revert AlreadyMember();
+        }
 
-    function quorumVotes() public view returns (uint) {
-        return (25 * members.length) / 100;
+        member.timeJoined = block.timestamp;
+        member.votingPower++;
+        totalMembers++;
+        emit MembershipBought(msg.sender);
     }
-
 
     function delegate(address to) external {
         require(votingPower[msg.sender] > 0, "INSUFFICIENT_VOTING_POWER");
@@ -174,7 +195,7 @@ contract DAO {
         Proposal storage proposal = proposals[proposalId];
         if (block.timestamp <= proposal.endTime) {
             return ProposalState.Active;
-        } else if (proposal.forVotes <= proposal.againstVotes || (proposal.forVotes + proposal.againstVotes) < quorumVotes()) {
+        } else if (proposal.forVotes <= proposal.againstVotes) {
             return ProposalState.NotReady;
         } else if (proposal.executed) {
             return ProposalState.Executed;
